@@ -29,14 +29,14 @@ provider "snowflake" {
 # ─────────────────────────────────────────────
 
 locals {
-  env_suffix    = upper(var.environment)
-  db_name       = "${upper(var.database_name)}_${local.env_suffix}"
-  schema_name   = upper(var.raw_schema_name)
-  pipe_name     = "AIRBNB_BOOKING_PIPE_${local.env_suffix}"
-  stage_name    = "AIRBNB_S3_STAGE_${local.env_suffix}"
-  int_name      = "AIRBNB_S3_INT_${local.env_suffix}"
-  format_name   = "AIRBNB_CSV_FORMAT_${local.env_suffix}"
-  table_name    = "BOOKING_RAW"
+  env_suffix  = upper(var.environment)
+  db_name     = "${upper(var.database_name)}_${local.env_suffix}"
+  schema_name = upper(var.raw_schema_name)
+  pipe_name   = "AIRBNB_BOOKING_PIPE_${local.env_suffix}"
+  stage_name  = "AIRBNB_S3_STAGE_${local.env_suffix}"
+  int_name    = "AIRBNB_S3_INT_${local.env_suffix}"
+  format_name = "AIRBNB_CSV_FORMAT_${local.env_suffix}"
+  table_name  = "BOOKING_RAW"
 }
 
 # ─────────────────────────────────────────────
@@ -67,9 +67,9 @@ resource "snowflake_storage_integration" "s3" {
   type    = "EXTERNAL_STAGE"
   enabled = true
 
-  storage_provider         = "S3"
+  storage_provider          = "S3"
   storage_allowed_locations = ["s3://${var.s3_bucket_name}/${var.s3_bucket_path}"]
-  storage_aws_role_arn     = var.aws_role_arn
+  storage_aws_role_arn      = var.aws_role_arn
 
   comment = "S3 integration for ${var.s3_bucket_name} — managed by Terraform"
 }
@@ -84,8 +84,8 @@ resource "snowflake_file_format" "csv" {
   schema      = snowflake_schema.raw.name
   format_type = var.file_format_type
 
-  skip_header      = var.csv_skip_header
-  field_delimiter   = var.csv_field_delimiter
+  skip_header                  = var.csv_skip_header
+  field_delimiter              = var.csv_field_delimiter
   field_optionally_enclosed_by = "\""
   empty_field_as_null          = true
   null_if                      = ["NULL", "null", ""]
@@ -98,10 +98,10 @@ resource "snowflake_file_format" "csv" {
 # ─────────────────────────────────────────────
 
 resource "snowflake_stage" "s3" {
-  name        = local.stage_name
-  database    = snowflake_database.this.name
-  schema      = snowflake_schema.raw.name
-  url         = var.s3_bucket_url
+  name     = local.stage_name
+  database = snowflake_database.this.name
+  schema   = snowflake_schema.raw.name
+  url      = var.s3_bucket_url
 
   storage_integration = snowflake_storage_integration.s3.name
   file_format         = "FORMAT_NAME = ${snowflake_database.this.name}.${snowflake_schema.raw.name}.${snowflake_file_format.csv.name}"

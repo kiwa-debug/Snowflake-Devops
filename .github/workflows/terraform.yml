@@ -35,23 +35,27 @@ jobs:
 
       - name: Create terraform.tfvars
         run: |
-          cat > terraform.tfvars << 'EOF'
-          environment                     = "${{ vars.ENVIRONMENT }}"
-          project_name                    = "${{ vars.PROJECT_NAME }}"
-          snowflake_organization_name     = "${{ secrets.SNOWFLAKE_ORG_NAME }}"
-          snowflake_account_name          = "${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}"
-          snowflake_user                  = "${{ secrets.SNOWFLAKE_USER }}"
-          snowflake_role                  = "ACCOUNTADMIN"
-          snowflake_warehouse             = "COMPUTE_WH"
-          snowflake_private_key_path      = "../snowflake_key/rsa_key.p8"
+          cat > terraform.tfvars <<EOF
+          environment                      = "${{ vars.ENVIRONMENT }}"
+          project_name                     = "${{ vars.PROJECT_NAME }}"
+          snowflake_organization_name      = "${{ secrets.SNOWFLAKE_ORG_NAME }}"
+          snowflake_account_name           = "${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}"
+          snowflake_user                   = "${{ secrets.SNOWFLAKE_USER }}"
+          snowflake_role                   = "ACCOUNTADMIN"
+          snowflake_warehouse              = "COMPUTE_WH"
+          snowflake_private_key_path       = "../snowflake_key/rsa_key.p8"
           snowflake_private_key_passphrase = "${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}"
-          database_name                   = "${{ vars.DATABASE_NAME }}"
-          raw_schema_name                 = "RAW"
-          s3_bucket_name                  = "${{ vars.S3_BUCKET_NAME }}"
-          s3_bucket_path                  = "${{ vars.S3_BUCKET_PATH }}"
-          s3_bucket_url                   = "${{ vars.S3_BUCKET_URL }}"
-          aws_role_arn                    = "${{ secrets.AWS_ROLE_ARN }}"
+          database_name                    = "${{ vars.DATABASE_NAME }}"
+          raw_schema_name                  = "RAW"
+          s3_bucket_name                   = "${{ vars.S3_BUCKET_NAME }}"
+          s3_bucket_path                   = "${{ vars.S3_BUCKET_PATH }}"
+          s3_bucket_url                    = "${{ vars.S3_BUCKET_URL }}"
+          aws_role_arn                     = "${{ secrets.AWS_ROLE_ARN }}"
           EOF
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Format tfvars
+        run: terraform fmt terraform.tfvars
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Terraform Init
@@ -93,23 +97,27 @@ jobs:
 
       - name: Create terraform.tfvars
         run: |
-          cat > terraform.tfvars << 'EOF'
-          environment                     = "${{ vars.ENVIRONMENT }}"
-          project_name                    = "${{ vars.PROJECT_NAME }}"
-          snowflake_organization_name     = "${{ secrets.SNOWFLAKE_ORG_NAME }}"
-          snowflake_account_name          = "${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}"
-          snowflake_user                  = "${{ secrets.SNOWFLAKE_USER }}"
-          snowflake_role                  = "ACCOUNTADMIN"
-          snowflake_warehouse             = "COMPUTE_WH"
-          snowflake_private_key_path      = "../snowflake_key/rsa_key.p8"
+          cat > terraform.tfvars <<EOF
+          environment                      = "${{ vars.ENVIRONMENT }}"
+          project_name                     = "${{ vars.PROJECT_NAME }}"
+          snowflake_organization_name      = "${{ secrets.SNOWFLAKE_ORG_NAME }}"
+          snowflake_account_name           = "${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}"
+          snowflake_user                   = "${{ secrets.SNOWFLAKE_USER }}"
+          snowflake_role                   = "ACCOUNTADMIN"
+          snowflake_warehouse              = "COMPUTE_WH"
+          snowflake_private_key_path       = "../snowflake_key/rsa_key.p8"
           snowflake_private_key_passphrase = "${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}"
-          database_name                   = "${{ vars.DATABASE_NAME }}"
-          raw_schema_name                 = "RAW"
-          s3_bucket_name                  = "${{ vars.S3_BUCKET_NAME }}"
-          s3_bucket_path                  = "${{ vars.S3_BUCKET_PATH }}"
-          s3_bucket_url                   = "${{ vars.S3_BUCKET_URL }}"
-          aws_role_arn                    = "${{ secrets.AWS_ROLE_ARN }}"
+          database_name                    = "${{ vars.DATABASE_NAME }}"
+          raw_schema_name                  = "RAW"
+          s3_bucket_name                   = "${{ vars.S3_BUCKET_NAME }}"
+          s3_bucket_path                   = "${{ vars.S3_BUCKET_PATH }}"
+          s3_bucket_url                    = "${{ vars.S3_BUCKET_URL }}"
+          aws_role_arn                     = "${{ secrets.AWS_ROLE_ARN }}"
           EOF
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Format tfvars
+        run: terraform fmt terraform.tfvars
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Terraform Init

@@ -15,7 +15,7 @@ on:
       - 'dbt/packages.yml'
 
 env:
-  DBT_VERSION: "1.11.2"
+  DBT_VERSION: "1.11.1"
   WORKING_DIR: dbt
 
 jobs:
