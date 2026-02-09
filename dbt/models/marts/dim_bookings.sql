@@ -121,7 +121,8 @@ enriched as (
         dayofweek(check_in_date) in (0, 6) as is_weekend_checkin,
 
         -- Metadata
-        current_timestamp() as _dbt_updated_at
+        current_timestamp() as _dbt_updated_at,
+        '1.0' as _model_version
 
     from staged_bookings
 ),
