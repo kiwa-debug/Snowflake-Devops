@@ -13,6 +13,7 @@ on:
       - 'dbt/models/**'
       - 'dbt/dbt_project.yml'
       - 'dbt/packages.yml'
+  workflow_dispatch:
 
 env:
   DBT_VERSION: "1.11.1"
