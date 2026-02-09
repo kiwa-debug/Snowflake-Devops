@@ -122,7 +122,7 @@ enriched as (
 
         -- Metadata
         current_timestamp() as _dbt_updated_at,
-        '1.0' as _model_version
+        '1.1' as _model_version
 
     from staged_bookings
 ),
