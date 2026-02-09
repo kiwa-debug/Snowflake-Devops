@@ -1,0 +1,82 @@
+version: 2
+
+models:
+  - name: dim_bookings
+    description: >
+      Analytics-ready dimension table with enriched booking data.
+      Includes calculated metrics, business categorizations, and time dimensions.
+
+    tests:
+      - dbt_utils.expression_is_true:
+          expression: "nights_booked >= 0 or nights_booked is null"
+          name: test_nights_booked_non_negative
+      - dbt_utils.expression_is_true:
+          expression: "check_out_date >= check_in_date or check_in_date is null"
+          name: test_checkout_after_checkin
+
+    columns:
+      - name: booking_key
+        description: Surrogate key (MD5 hash of booking_id)
+        tests:
+          - unique
+          - not_null
+
+      - name: booking_id
+        description: Natural key from source system
+        tests:
+          - unique
+          - not_null
+
+      - name: listing_id
+        description: Property listing identifier
+        tests:
+          - not_null:
+              severity: warn
+
+      - name: host_id
+        description: Host identifier for the listing
+        tests:
+          - not_null:
+              severity: warn
+
+      - name: guest_id
+        description: Guest identifier for the booking
+        tests:
+          - not_null:
+              severity: warn
+
+      - name: total_price
+        description: Total booking price
+
+      - name: currency
+        description: Currency code (e.g. USD)
+
+      - name: price_per_night
+        description: Calculated price per night (total_price / nights_booked)
+
+      - name: realized_revenue
+        description: Revenue for completed/confirmed bookings (0 for cancelled/pending)
+
+      - name: booking_status
+        description: Booking status (lowercase)
+        tests:
+          - accepted_values:
+              values: ['confirmed', 'pending', 'cancelled', 'completed']
+
+      - name: booking_status_display
+        description: User-friendly status for display
+
+      - name: stay_category
+        description: Duration-based booking category
+        tests:
+          - accepted_values:
+              values: ['Unknown', 'Weekend', 'Week', 'Monthly', 'Long-term']
+
+      - name: lead_time_days
+        description: Days between booking creation and check-in
+
+      - name: is_weekend_checkin
+        description: Whether check-in falls on a weekend
+
+      - name: created_at
+        description: Date the booking was created

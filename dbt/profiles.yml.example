@@ -1,0 +1,15 @@
+airbnb_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: HHMNKHZ-QIC56996                                        # Your Snowflake account ID
+      user: TERRAFORMUSER                                              # Your Snowflake username
+      authenticator: snowflake_jwt                                     # Key-pair auth (no password)
+      private_key_path: /FULL/PATH/TO/snowflake_key/rsa_key.p8        # ← Replace with absolute path
+      private_key_passphrase: "YOUR_KEY_PASSPHRASE"                    # ← Replace with your passphrase
+      role: ACCOUNTADMIN
+      warehouse: COMPUTE_WH
+      database: AIRBNB_PROJECT_DEV
+      schema: RAW
+      threads: 4

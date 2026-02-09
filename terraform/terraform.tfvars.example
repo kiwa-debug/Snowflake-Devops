@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────
+# Terraform Variables — EXAMPLE
+# ─────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in your values:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# NEVER commit terraform.tfvars — it contains secrets.
+# ─────────────────────────────────────────────
+
+# Environment
+environment  = "dev"
+project_name = "airbnb"
+
+# Snowflake Connection (Key-Pair Auth - no password needed)
+snowflake_organization_name      = "WYOJMCE"                       # Organization name (first part of account ID)
+snowflake_account_name           = "SV40906"                       # Account name (second part of account ID)
+snowflake_user                   = "TERRAFORMUSER"                  # Your Snowflake username
+snowflake_role                   = "ACCOUNTADMIN"
+snowflake_warehouse              = "COMPUTE_WH"
+snowflake_private_key_path       = "../snowflake_key/rsa_key.p8"    # Path to private key (relative to terraform/)
+snowflake_private_key_passphrase = "YOUR_KEY_PASSPHRASE"            # ← Replace with your key passphrase
+
+# Database
+database_name   = "AIRBNB_PROJECT"
+raw_schema_name = "RAW"
+
+# AWS S3
+s3_bucket_name = "snowbucketkirtish"
+s3_bucket_path = "Booking/"
+s3_bucket_url  = "s3://snowbucketkirtish/Booking/"
+aws_role_arn   = "arn:aws:iam::YOUR_ACCOUNT_ID:role/snowflake-s3-access-role"  # ← Replace with your AWS Role ARN
+
+# Snowpipe
+auto_ingest_enabled = true
+file_format_type    = "CSV"
+csv_skip_header     = 1
+csv_field_delimiter = ","
+
+# Tags
+tags = {
+  project     = "airbnb-data-pipeline"
+  managed_by  = "terraform"
+  cost_center = "data-engineering"
+}

@@ -1,0 +1,3 @@
+﻿booking_id,listing_id,host_id,guest_id,check_in_date,check_out_date,total_price,currency,booking_status,created_at
+BK006,LST004,HOST004,GUEST004,15/04/25,20/04/25,600,USD,confirmed,20/03/25
+BK007,LST005,HOST005,GUEST005,18/04/25,20/04/25,320,USD,completed,25/03/25

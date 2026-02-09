@@ -1,0 +1,72 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Raw data landing zone. Contains unmodified data as ingested from S3
+      via Snowpipe. This data should be treated as immutable.
+
+    database: "AIRBNB_PROJECT_{{ target.name | upper }}"
+    schema: RAW
+
+    tables:
+      - name: booking_raw
+        description: >
+          Raw booking data loaded from S3 CSV files via Snowpipe.
+          All columns are VARCHAR — type casting happens in staging.
+        identifier: BOOKING_RAW
+
+        columns:
+          - name: BOOKING_ID
+            description: Unique booking identifier
+            tests:
+              - not_null:
+                  severity: error
+              - unique:
+                  severity: error
+
+          - name: LISTING_ID
+            description: Property listing identifier
+            tests:
+              - not_null:
+                  severity: warn
+
+          - name: HOST_ID
+            description: Host identifier for the listing
+            tests:
+              - not_null:
+                  severity: warn
+
+          - name: GUEST_ID
+            description: Guest identifier for the booking
+            tests:
+              - not_null:
+                  severity: warn
+
+          - name: CHECK_IN_DATE
+            description: Scheduled guest check-in date
+            tests:
+              - not_null:
+                  severity: warn
+
+          - name: CHECK_OUT_DATE
+            description: Scheduled guest check-out date
+            tests:
+              - not_null:
+                  severity: warn
+
+          - name: TOTAL_PRICE
+            description: Total booking price
+
+          - name: CURRENCY
+            description: Currency code for the booking (e.g. USD)
+
+          - name: BOOKING_STATUS
+            description: Current booking status (confirmed, pending, cancelled, completed)
+            tests:
+              - accepted_values:
+                  values: ['confirmed', 'pending', 'cancelled', 'completed', 'Confirmed', 'Pending', 'Cancelled', 'Completed']
+                  severity: warn
+
+          - name: CREATED_AT
+            description: Date when the booking was created

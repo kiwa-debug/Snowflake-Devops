@@ -1,0 +1,129 @@
+name: dbt CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dbt/models/**'
+      - 'dbt/dbt_project.yml'
+      - 'dbt/packages.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'dbt/models/**'
+      - 'dbt/dbt_project.yml'
+      - 'dbt/packages.yml'
+
+env:
+  DBT_VERSION: "1.11.2"
+  WORKING_DIR: dbt
+
+jobs:
+  dbt-test:
+    name: dbt Test (PR Check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt
+        run: pip install dbt-snowflake==${{ env.DBT_VERSION }}
+
+      - name: Write Snowflake private key
+        run: |
+          mkdir -p /tmp/snowflake_key
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > /tmp/snowflake_key/rsa_key.p8
+
+      - name: Create profiles.yml
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          airbnb_analytics:
+            target: dev
+            outputs:
+              dev:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ORG_NAME }}-${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+                user: ${{ secrets.SNOWFLAKE_USER }}
+                authenticator: snowflake_jwt
+                private_key_path: /tmp/snowflake_key/rsa_key.p8
+                private_key_passphrase: "${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}"
+                role: ACCOUNTADMIN
+                warehouse: COMPUTE_WH
+                database: ${{ vars.DATABASE_NAME }}_${{ vars.ENVIRONMENT_UPPER }}
+                schema: RAW
+                threads: 4
+          EOF
+
+      - name: dbt deps
+        run: dbt deps
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: dbt compile
+        run: dbt compile
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: dbt test (source tests only)
+        run: dbt test --select source:*
+        working-directory: ${{ env.WORKING_DIR }}
+
+  dbt-run:
+    name: dbt Run (Deploy)
+    runs-on: ubuntu-latest
+    needs: dbt-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dbt
+        run: pip install dbt-snowflake==${{ env.DBT_VERSION }}
+
+      - name: Write Snowflake private key
+        run: |
+          mkdir -p /tmp/snowflake_key
+          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > /tmp/snowflake_key/rsa_key.p8
+
+      - name: Create profiles.yml
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          airbnb_analytics:
+            target: dev
+            outputs:
+              dev:
+                type: snowflake
+                account: ${{ secrets.SNOWFLAKE_ORG_NAME }}-${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+                user: ${{ secrets.SNOWFLAKE_USER }}
+                authenticator: snowflake_jwt
+                private_key_path: /tmp/snowflake_key/rsa_key.p8
+                private_key_passphrase: "${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}"
+                role: ACCOUNTADMIN
+                warehouse: COMPUTE_WH
+                database: ${{ vars.DATABASE_NAME }}_${{ vars.ENVIRONMENT_UPPER }}
+                schema: RAW
+                threads: 4
+          EOF
+
+      - name: dbt deps
+        run: dbt deps
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: dbt run
+        run: dbt run
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: dbt test
+        run: dbt test
+        working-directory: ${{ env.WORKING_DIR }}
