@@ -1,13 +1,23 @@
+# ─────────────────────────────────────────────
+# dbt Profile — EXAMPLE
+# ─────────────────────────────────────────────
+# Copy this file to ~/.dbt/profiles.yml and fill in your values:
+#   mkdir -p ~/.dbt
+#   cp profiles.yml.example ~/.dbt/profiles.yml
+#
+# NEVER commit your actual ~/.dbt/profiles.yml — it contains secrets.
+# ─────────────────────────────────────────────
+
 airbnb_analytics:
   target: dev
   outputs:
     dev:
       type: snowflake
-      account: HHMNKHZ-QIC56996                                        # Your Snowflake account ID
-      user: TERRAFORMUSER                                              # Your Snowflake username
-      authenticator: snowflake_jwt                                     # Key-pair auth (no password)
-      private_key_path: /FULL/PATH/TO/snowflake_key/rsa_key.p8        # ← Replace with absolute path
-      private_key_passphrase: "YOUR_KEY_PASSPHRASE"                    # ← Replace with your passphrase
+      account: YOUR_ORG-YOUR_ACCOUNT              # e.g., HHMNKHZ-QIC56996
+      user: TF_USER                                # Your Snowflake username
+      authenticator: snowflake_jwt                 # RSA key-pair auth (no password)
+      private_key_path: /FULL/PATH/TO/snowflake_key/rsa_key.p8  # Must be absolute path
+      private_key_passphrase: "YOUR_PASSPHRASE"    # Passphrase from RSA key generation
       role: ACCOUNTADMIN
       warehouse: COMPUTE_WH
       database: AIRBNB_PROJECT_DEV

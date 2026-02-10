@@ -1,119 +1,309 @@
-# Setup Guide: Snowflake Data Pipeline
+# Snowflake Data Pipeline -- Setup Guide
 
-End-to-end guide to deploy a data pipeline that auto-ingests CSV files from S3 into Snowflake using Snowpipe, transforms data with dbt, and deploys via Bitbucket Pipelines.
+A complete, step-by-step guide to build a data pipeline that:
 
-**Authentication:** RSA Key-Pair (no passwords)
+1. Auto-ingests CSV files from **AWS S3** into **Snowflake** using **Snowpipe**
+2. Transforms raw data into analytics-ready tables using **dbt**
+3. Manages infrastructure with **Terraform**
+4. Automates testing and deployment with **GitHub Actions** CI/CD
 
 ---
 
 ## Table of Contents
 
-1. [Prerequisites](#step-1-prerequisites)
-2. [Generate Snowflake RSA Key-Pair](#step-2-generate-snowflake-rsa-key-pair)
-3. [Register the Public Key in Snowflake](#step-3-register-the-public-key-in-snowflake)
-4. [Create AWS IAM Role](#step-4-create-aws-iam-role)
-5. [Configure Terraform](#step-5-configure-terraform)
-6. [Deploy Infrastructure](#step-6-deploy-infrastructure)
-7. [Complete AWS-Snowflake Integration](#step-7-complete-aws-snowflake-integration)
-8. [Test Snowpipe](#step-8-test-snowpipe)
-9. [Configure dbt](#step-9-configure-dbt)
-10. [Run dbt](#step-10-run-dbt)
-11. [Verify the Full Pipeline](#step-11-verify-the-full-pipeline)
-12. [Set Up Bitbucket CI/CD](#step-12-set-up-bitbucket-cicd)
-13. [Quick Reference](#quick-reference)
-14. [Troubleshooting](#troubleshooting)
+| Phase | Steps | What You Will Do |
+|-------|-------|------------------|
+| **Phase 1: Foundations** | Steps 1--3 | Install tools, generate keys, create Snowflake user |
+| **Phase 2: AWS Setup** | Steps 4--5 | Create S3 bucket, IAM role with S3 permissions |
+| **Phase 3: Infrastructure** | Steps 6--8 | Configure and deploy Terraform, link AWS to Snowflake |
+| **Phase 4: Data Ingestion** | Step 9 | Upload CSV to S3, verify Snowpipe auto-loads data |
+| **Phase 5: Transformations** | Steps 10--11 | Configure dbt, run models and tests |
+| **Phase 6: CI/CD** | Steps 12--13 | Push to GitHub, set up GitHub Actions pipelines |
+| **Phase 7: Validation** | Step 14 | End-to-end verification |
 
 ---
 
-## Step 1: Prerequisites
+## Architecture Overview
 
-### Install Tools
+```
+CSV file uploaded to S3
+        |
+        v
+S3 Event Notification --> SQS Queue
+                               |
+                               v
+                         Snowpipe (auto-ingest)
+                               |
+                               v
+                   BOOKING_RAW table (all VARCHAR)
+                               |
+                          dbt run
+                               |
+                   +-----------+-----------+
+                   v                       v
+           stg_bookings              dim_bookings
+           (view: clean &            (table: business
+            cast types)               logic & metrics)
+                                           |
+                                           v
+                                   BI Tools / Reports
+```
+
+**Key design decisions:**
+- All raw columns are `VARCHAR` to avoid Snowflake provider bugs with column collation. Type casting is handled in dbt staging models.
+- RSA key-pair authentication is used everywhere (Terraform, dbt, CI/CD). No passwords.
+
+---
+
+## Project Structure
+
+```
+Snow_project_v1/
+|-- .github/
+|   |-- workflows/
+|       |-- terraform.yml         # CI: validates Terraform on push
+|       |-- dbt.yml               # CI/CD: compiles, runs, and tests dbt models
+|-- terraform/
+|   |-- main.tf                   # All Snowflake resources (7 resources)
+|   |-- variables.tf              # Variable definitions
+|   |-- outputs.tf                # Post-deploy instructions
+|   |-- terraform.tfvars.example  # Config template (copy to terraform.tfvars)
+|   |-- trust-policy.json         # AWS IAM trust policy reference
+|-- dbt/
+|   |-- dbt_project.yml           # dbt project config
+|   |-- packages.yml              # External packages (dbt_utils, dbt_expectations)
+|   |-- profiles.yml.example      # Connection template (copy to ~/.dbt/profiles.yml)
+|   |-- models/
+|       |-- staging/
+|       |   |-- sources.yml       # Raw source definitions & data tests
+|       |   |-- stg_bookings.sql  # Staging: cleans & casts raw data
+|       |-- marts/
+|           |-- dim_bookings.sql  # Mart: enriched analytics table
+|           |-- schema.yml        # Model tests & documentation
+|-- snowflake_key/                # RSA keys (DO NOT COMMIT)
+|   |-- rsa_key.p8               # Encrypted private key
+|   |-- rsa_key.pub              # Public key
+|-- test_data/
+|   |-- test_booking_1.csv       # Sample CSV files for testing
+|-- .gitignore                   # Prevents secrets from being committed
+|-- SETUP_GUIDE.md               # This file
+```
+
+---
+
+## CSV File Format
+
+Your CSV files must have this exact header row and column order:
+
+```csv
+booking_id,listing_id,host_id,guest_id,check_in_date,check_out_date,total_price,currency,booking_status,created_at
+BK001,LST001,HOST001,GUEST001,15/03/24,18/03/24,450,USD,confirmed,01/03/24
+BK002,LST002,HOST002,GUEST002,20/03/24,22/03/24,280,USD,pending,05/03/24
+```
+
+| Column | Example | Notes |
+|--------|---------|-------|
+| booking_id | BK001 | Unique per booking |
+| listing_id | LST001 | Property identifier |
+| host_id | HOST001 | Host identifier |
+| guest_id | GUEST001 | Guest identifier |
+| check_in_date | 15/03/24 | Format: DD/MM/YY |
+| check_out_date | 18/03/24 | Format: DD/MM/YY |
+| total_price | 450 | Numeric value |
+| currency | USD | Currency code |
+| booking_status | confirmed | One of: confirmed, pending, cancelled, completed |
+| created_at | 01/03/24 | Format: DD/MM/YY |
+
+Sample files are available in the `test_data/` folder.
+
+---
+
+# Phase 1: Foundations
+
+## Step 1: Install Required Tools
+
+You need three tools installed on your machine.
+
+### 1a. Install Terraform
+
+Terraform manages the Snowflake infrastructure (database, tables, pipes, etc.).
 
 ```bash
-# Terraform
+# macOS
 brew install terraform
 
-# dbt with Snowflake adapter
+# Verify installation
+terraform --version
+```
+
+Expected output: `Terraform v1.x.x`
+
+### 1b. Install dbt with the Snowflake Adapter
+
+dbt transforms the raw data into clean, analytics-ready tables.
+
+```bash
 pip install dbt-snowflake
 
-# Verify
-terraform --version
+# Verify installation
 dbt --version
 ```
 
-### What You Need
+Expected output: Shows `dbt-core` and `dbt-snowflake` versions.
 
-- Snowflake account with ACCOUNTADMIN access
-- AWS account with an S3 bucket (`snowbucketkirtish`)
-- CSV files in `s3://snowbucketkirtish/Booking/`
+### 1c. Install AWS CLI (Optional)
+
+Only needed if you want to upload CSV files from the command line.
+
+```bash
+brew install awscli
+
+# Configure with your AWS credentials
+aws configure
+```
 
 ---
 
-## Step 2: Generate Snowflake RSA Key-Pair
+## Step 2: Generate RSA Key-Pair for Snowflake Authentication
 
-Create a folder for your keys and generate them:
+Snowflake uses RSA key-pair authentication instead of passwords. You will generate a private key (kept secret) and a public key (registered in Snowflake).
+
+### 2a. Create the Key Directory
+
+Run these commands from the project root (`Snow_project_v1/`):
 
 ```bash
 mkdir -p snowflake_key
 cd snowflake_key
+```
 
-# Generate encrypted private key (you'll set a passphrase)
+### 2b. Generate the Private Key
+
+```bash
 openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 des3 -inform PEM -out rsa_key.p8
+```
 
-# Generate public key from the private key
+You will be prompted to set a **passphrase**. Choose a strong one and **write it down** -- you will need it in Steps 6 and 10.
+
+### 2c. Generate the Public Key
+
+```bash
 openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
 
+Enter the same passphrase you set above.
+
+### 2d. Go Back to the Project Root
+
+```bash
 cd ..
 ```
 
-You'll be asked to set a **passphrase** -- remember it, you'll need it for Terraform and dbt.
+### 2e. Verify Your Keys
 
-After this you should have:
-- `snowflake_key/rsa_key.p8` (encrypted private key)
-- `snowflake_key/rsa_key.pub` (public key)
+You should now have two files:
+
+| File | Purpose | Keep Secret? |
+|------|---------|--------------|
+| `snowflake_key/rsa_key.p8` | Encrypted private key | YES -- never commit |
+| `snowflake_key/rsa_key.pub` | Public key | Shared with Snowflake |
 
 ---
 
-## Step 3: Register the Public Key in Snowflake
+## Step 3: Create a Snowflake User and Register the Public Key
 
-### 3a. Get the Public Key Value
+### 3a. Create a Dedicated User in Snowflake
+
+Log into **Snowflake** (Snowsight web UI) as `ACCOUNTADMIN` and run:
+
+```sql
+CREATE USER TF_USER
+  DEFAULT_ROLE = ACCOUNTADMIN
+  DEFAULT_WAREHOUSE = COMPUTE_WH
+  COMMENT = 'Service account for Terraform and dbt';
+
+GRANT ROLE ACCOUNTADMIN TO USER TF_USER;
+```
+
+### 3b. Get Your Public Key Content
+
+On your local machine, run:
 
 ```bash
 cat snowflake_key/rsa_key.pub
 ```
 
-Copy only the key content (everything between `-----BEGIN PUBLIC KEY-----` and `-----END PUBLIC KEY-----`, without those lines, and without line breaks).
+This will output something like:
 
-### 3b. Register in Snowflake
-
-Run this in Snowflake (Snowsight or SnowSQL), replacing the key value:
-
-```sql
-ALTER USER TERRAFORMUSER SET RSA_PUBLIC_KEY='MIIBIjANBgkqh...paste your key here...';
+```
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+...multiple lines of text...
+-----END PUBLIC KEY-----
 ```
 
-### 3c. Verify It Works
+Copy **only the key content** -- everything between the `BEGIN` and `END` lines, **without** those lines, and **without** any line breaks. It should be one single long string.
+
+### 3c. Register the Public Key with the Snowflake User
+
+Run this in Snowflake, pasting your key string:
 
 ```sql
-DESC USER TERRAFORMUSER;
+ALTER USER TF_USER SET RSA_PUBLIC_KEY='MIIBIjANBgkqh...paste_your_full_key_here...';
 ```
 
-Look for `RSA_PUBLIC_KEY_FP` -- if it shows a fingerprint, the key is registered.
+### 3d. Verify the Key Was Registered
+
+```sql
+DESC USER TF_USER;
+```
+
+Look for the `RSA_PUBLIC_KEY_FP` row. If it shows a fingerprint value (like `SHA256:abc123...`), the key is successfully registered.
 
 ---
 
-## Step 4: Create AWS IAM Role
+# Phase 2: AWS Setup
 
-### 4a. Create the Role
+## Step 4: Create an S3 Bucket
 
-1. Go to **AWS Console > IAM > Roles > Create Role**
-2. Trusted entity: **AWS Account** (your own account)
-3. Role name: `snowflake-s3-access-role`
-4. Click **Create Role**
+### 4a. Create the Bucket
 
-### 4b. Attach S3 Policy
+1. Go to **AWS Console > S3 > Create bucket**
+2. Bucket name: choose a globally unique name (e.g., `snowflakedevops`)
+3. Region: pick one close to your Snowflake account
+4. Leave other settings as default
+5. Click **Create bucket**
 
-Open the role > **Permissions > Add permissions > Create inline policy** > JSON:
+### 4b. Create the Booking Folder
+
+1. Open your new bucket
+2. Click **Create folder**
+3. Folder name: `Booking`
+4. Click **Create folder**
+
+Your CSV files will be uploaded to `s3://YOUR_BUCKET_NAME/Booking/`.
+
+---
+
+## Step 5: Create an AWS IAM Role for Snowflake
+
+Snowflake needs permission to read files from your S3 bucket. You will create an IAM role that Snowflake can assume.
+
+### 5a. Create the IAM Role
+
+1. Go to **AWS Console > IAM > Roles > Create role**
+2. Trusted entity type: select **AWS account**
+3. Select **This account** (your own AWS account ID)
+4. Click **Next**
+5. Skip adding permissions for now (we will add them next)
+6. Role name: `snowflake-s3-access-role`
+7. Click **Create role**
+
+### 5b. Add S3 Read Permissions
+
+1. Open the role you just created
+2. Go to **Permissions** tab > **Add permissions** > **Create inline policy**
+3. Click the **JSON** tab and paste this (replace `YOUR_BUCKET_NAME` with your actual bucket name):
 
 ```json
 {
@@ -128,55 +318,67 @@ Open the role > **Permissions > Add permissions > Create inline policy** > JSON:
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::snowbucketkirtish",
-        "arn:aws:s3:::snowbucketkirtish/*"
+        "arn:aws:s3:::YOUR_BUCKET_NAME",
+        "arn:aws:s3:::YOUR_BUCKET_NAME/*"
       ]
     }
   ]
 }
 ```
 
-Policy name: `snowflake-s3-read-policy`
+4. Policy name: `snowflake-s3-read-policy`
+5. Click **Create policy**
 
-### 4c. Note the Role ARN
+### 5c. Copy the Role ARN
 
-Copy it from the role summary page (e.g., `arn:aws:iam::123456789012:role/snowflake-s3-access-role`).
+From the role summary page, copy the **Role ARN**. It looks like:
+
+```
+arn:aws:iam::123456789012:role/snowflake-s3-access-role
+```
+
+Save this -- you will need it in Step 6.
 
 ---
 
-## Step 5: Configure Terraform
+# Phase 3: Infrastructure
 
-### 5a. Create Your Variables File
+## Step 6: Configure Terraform
+
+### 6a. Create Your Variables File
 
 ```bash
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-### 5b. Edit terraform.tfvars
+### 6b. Edit `terraform.tfvars`
+
+Open `terraform/terraform.tfvars` in your editor and fill in your values:
 
 ```hcl
 # Environment
 environment  = "dev"
 project_name = "airbnb"
 
-# Snowflake Connection (Key-Pair Auth - no password needed)
-snowflake_account                = "HHMNKHZ-QIC56996"               # Your Snowflake account ID
-snowflake_user                   = "TERRAFORMUSER"                  # Your Snowflake username
+# Snowflake Connection
+snowflake_organization_name      = "YOUR_ORG"       # First part of your account ID
+snowflake_account_name           = "YOUR_ACCOUNT"    # Second part of your account ID
+snowflake_user                   = "TF_USER"
 snowflake_role                   = "ACCOUNTADMIN"
 snowflake_warehouse              = "COMPUTE_WH"
-snowflake_private_key_path       = "../snowflake_key/rsa_key.p8"    # Path to private key (relative to terraform/)
-snowflake_private_key_passphrase = "YOUR_KEY_PASSPHRASE"            # ← Replace with your key passphrase
+snowflake_private_key_path       = "../snowflake_key/rsa_key.p8"
+snowflake_private_key_passphrase = "YOUR_PASSPHRASE" # From Step 2b
 
 # Database
 database_name   = "AIRBNB_PROJECT"
 raw_schema_name = "RAW"
 
 # AWS S3
-s3_bucket_name = "snowbucketkirtish"
+s3_bucket_name = "YOUR_BUCKET_NAME"                  # From Step 4
 s3_bucket_path = "Booking/"
-s3_bucket_url  = "s3://snowbucketkirtish/Booking/"
-aws_role_arn   = "arn:aws:iam::YOUR_ACCOUNT_ID:role/snowflake-s3-access-role"  # ← Replace with your AWS Role ARN
+s3_bucket_url  = "s3://YOUR_BUCKET_NAME/Booking/"
+aws_role_arn   = "arn:aws:iam::YOUR_ACCOUNT_ID:role/snowflake-s3-access-role"  # From Step 5c
 
 # Snowpipe
 auto_ingest_enabled = true
@@ -192,52 +394,100 @@ tags = {
 }
 ```
 
-> **Note:** No `snowflake_password` is needed. Authentication uses the RSA key-pair from `snowflake_key/rsa_key.p8` with the passphrase you set in Step 2.
+**How to find your Snowflake account identifiers:**
+- Log into Snowflake (Snowsight)
+- Click on your account name in the bottom-left corner
+- Your account URL will be like `https://ORGNAME-ACCOUNTNAME.snowflakecomputing.com`
+- `snowflake_organization_name` = the part before the dash (e.g., `HHMNKHZ`)
+- `snowflake_account_name` = the part after the dash (e.g., `QIC56996`)
 
 ---
 
-## Step 6: Deploy Infrastructure
+## Step 7: Deploy Snowflake Infrastructure with Terraform
+
+### 7a. Initialize Terraform
+
+This downloads the Snowflake provider plugin.
 
 ```bash
 cd terraform
 
-# Initialize
 terraform init
+```
 
-# Preview what will be created (7 resources)
+Expected: `Terraform has been successfully initialized!`
+
+### 7b. Preview the Plan
+
+This shows what Terraform will create **without** making any changes.
+
+```bash
 terraform plan
+```
 
-# Deploy (type 'yes')
+Expected: `Plan: 7 to add, 0 to change, 0 to destroy.`
+
+The 7 resources are:
+
+| # | Resource | Name |
+|---|----------|------|
+| 1 | Database | `AIRBNB_PROJECT_DEV` |
+| 2 | Schema | `RAW` |
+| 3 | Storage Integration | `AIRBNB_S3_INT_DEV` |
+| 4 | File Format | `AIRBNB_CSV_FORMAT_DEV` |
+| 5 | External Stage | `AIRBNB_S3_STAGE_DEV` |
+| 6 | Table | `BOOKING_RAW` |
+| 7 | Snowpipe | `AIRBNB_BOOKING_PIPE_DEV` |
+
+### 7c. Apply the Plan
+
+This creates all the resources in Snowflake.
+
+```bash
 terraform apply
 ```
 
-**Expected output:**
+Type `yes` when prompted.
+
+Expected output:
+
 ```
 Apply complete! Resources: 7 added, 0 changed, 0 destroyed.
 
+Outputs:
 database_name = "AIRBNB_PROJECT_DEV"
 pipe_full_name = "AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV"
 ```
 
+It will also print **Next Steps** instructions for completing the AWS integration (Step 8).
+
 ---
 
-## Step 7: Complete AWS-Snowflake Integration
+## Step 8: Link AWS and Snowflake (Trust Policy + Event Notification)
 
-### 7a. Get Storage Integration Details
+After Terraform creates the storage integration, you need to tell AWS to trust Snowflake. This is a one-time manual step.
 
-Run in **Snowflake**:
+### 8a. Get Snowflake Integration Details
+
+Run this in **Snowflake**:
 
 ```sql
 DESCRIBE INTEGRATION AIRBNB_S3_INT_DEV;
 ```
 
-Note these two values:
-- `STORAGE_AWS_IAM_USER_ARN`
-- `STORAGE_AWS_EXTERNAL_ID`
+From the results, copy these two values:
 
-### 7b. Update AWS IAM Trust Policy
+| Property | Example Value |
+|----------|---------------|
+| `STORAGE_AWS_IAM_USER_ARN` | `arn:aws:iam::629236738139:user/2eih1000-s` |
+| `STORAGE_AWS_EXTERNAL_ID` | `UC92399_SFCRole=5_rj+eeAZnOL7+rVhVBTkuDu3UnQs=` |
 
-Go to **AWS > IAM > Roles > snowflake-s3-access-role > Trust relationships > Edit**:
+### 8b. Update the AWS IAM Trust Policy
+
+1. Go to **AWS Console > IAM > Roles > snowflake-s3-access-role**
+2. Click the **Trust relationships** tab
+3. Click **Edit trust policy**
+4. Replace the entire content with this, substituting your values:
 
 ```json
 {
@@ -259,57 +509,94 @@ Go to **AWS > IAM > Roles > snowflake-s3-access-role > Trust relationships > Edi
 }
 ```
 
-### 7c. Get Snowpipe SQS ARN
+5. Click **Update policy**
 
-Run in **Snowflake**:
+### 8c. Get the Snowpipe SQS ARN
+
+Run this in **Snowflake**:
 
 ```sql
 SHOW PIPES IN SCHEMA AIRBNB_PROJECT_DEV.RAW;
 ```
 
-Copy the `notification_channel` value.
+From the results, copy the `notification_channel` value. It will look like:
+`arn:aws:sqs:us-east-1:123456789:sf-snowpipe-...`
 
-### 7d. Configure S3 Event Notification
+### 8d. Configure S3 Event Notification
 
-1. **AWS > S3 > snowbucketkirtish > Properties > Event notifications > Create**
-2. Configure:
+This tells S3 to notify Snowpipe whenever a new file is uploaded.
+
+1. Go to **AWS Console > S3 > YOUR_BUCKET > Properties**
+2. Scroll down to **Event notifications**
+3. Click **Create event notification**
+4. Fill in:
 
 | Setting | Value |
 |---------|-------|
 | Event name | `snowpipe-booking-notification` |
 | Prefix | `Booking/` |
-| Event types | All object create events |
-| Destination | SQS queue |
-| SQS ARN | Paste the `notification_channel` from Step 7c |
+| Event types | Check **All object create events** |
+| Destination | Select **SQS queue** |
+| SQS queue ARN | Paste the `notification_channel` from Step 8c |
+
+5. Click **Save changes**
+
+### 8e. Verify the Integration
+
+Run in **Snowflake**:
+
+```sql
+-- Should return a JSON with executionState = "RUNNING"
+SELECT SYSTEM$PIPE_STATUS('AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV');
+```
+
+If `executionState` shows `RUNNING`, the integration is complete.
 
 ---
 
-## Step 8: Test Snowpipe
+# Phase 4: Data Ingestion
 
-### 8a. Upload a Test CSV
+## Step 9: Test Snowpipe Auto-Ingestion
 
-Create a file with your CSV's column format and upload to S3:
+### 9a. Upload a Test CSV File
+
+**Option A -- AWS CLI:**
 
 ```bash
-aws s3 cp test_data/test_booking_3.csv s3://snowbucketkirtish/Booking/
+aws s3 cp test_data/test_booking_1.csv s3://YOUR_BUCKET_NAME/Booking/
 ```
 
-Or upload via the AWS Console to `Booking/` folder.
+**Option B -- AWS Console:**
+1. Go to S3 > your bucket > `Booking/` folder
+2. Click **Upload**
+3. Select a CSV file from the `test_data/` folder
+4. Click **Upload**
 
-### 8b. Verify (Wait 1-2 Minutes)
+### 9b. Wait 1--2 Minutes
+
+Snowpipe processes files asynchronously. It typically takes 30 seconds to 2 minutes.
+
+### 9c. Verify Data Was Loaded
+
+Run in **Snowflake**:
 
 ```sql
--- Check pipe status
-SELECT SYSTEM$PIPE_STATUS('AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV');
+-- Check the row count
+SELECT COUNT(*) FROM AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW;
 
--- Check data arrived
+-- View the actual data
 SELECT * FROM AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW;
 ```
 
-### 8c. If No Data Appears
+You should see your CSV rows loaded into the table.
+
+### 9d. Troubleshooting -- If No Data Appears
 
 ```sql
--- Check for load errors
+-- Check pipe status (should show executionState = RUNNING)
+SELECT SYSTEM$PIPE_STATUS('AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV');
+
+-- Check for load errors in the last hour
 SELECT *
 FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
     TABLE_NAME => 'AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW',
@@ -317,21 +604,30 @@ FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
 ))
 ORDER BY LAST_LOAD_TIME DESC;
 
--- Force a refresh
+-- Force Snowpipe to re-scan for files
 ALTER PIPE AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV REFRESH;
 ```
 
+**Common issues:**
+- **S3 event notification not configured**: Go back to Step 8d
+- **Trust policy incorrect**: Go back to Step 8b
+- **File already processed**: Snowpipe skips files it has already loaded. Upload a file with a **different filename**
+
 ---
 
-## Step 9: Configure dbt
+# Phase 5: Data Transformations
 
-### 9a. Create dbt Profile
+## Step 10: Configure dbt
+
+### 10a. Create the dbt Profile Directory
 
 ```bash
 mkdir -p ~/.dbt
 ```
 
-### 9b. Create ~/.dbt/profiles.yml
+### 10b. Create `~/.dbt/profiles.yml`
+
+Create the file `~/.dbt/profiles.yml` with this content (replace the placeholder values):
 
 ```yaml
 airbnb_analytics:
@@ -339,11 +635,11 @@ airbnb_analytics:
   outputs:
     dev:
       type: snowflake
-      account: HHMNKHZ-QIC56996                                        # Your Snowflake account ID
-      user: TERRAFORMUSER                                              # Your Snowflake username
-      authenticator: snowflake_jwt                                     # Key-pair auth (no password)
-      private_key_path: /FULL/PATH/TO/snowflake_key/rsa_key.p8        # ← Replace with absolute path
-      private_key_passphrase: "YOUR_KEY_PASSPHRASE"                    # ← Replace with your passphrase
+      account: YOUR_ORG-YOUR_ACCOUNT          # e.g., HHMNKHZ-QIC56996
+      user: TF_USER
+      authenticator: snowflake_jwt
+      private_key_path: /FULL/PATH/TO/Snow_project_v1/snowflake_key/rsa_key.p8
+      private_key_passphrase: "YOUR_PASSPHRASE"
       role: ACCOUNTADMIN
       warehouse: COMPUTE_WH
       database: AIRBNB_PROJECT_DEV
@@ -351,66 +647,105 @@ airbnb_analytics:
       threads: 4
 ```
 
-**Important:** Use the **full absolute path** for `private_key_path` (e.g., `/Users/kirtishwankhedkar/Snowflake personal devops/snowflake_key/rsa_key.p8`).
+**Important notes:**
+- `account` format is `ORG_NAME-ACCOUNT_NAME` (with a hyphen), the same values from Step 6b
+- `private_key_path` must be an **absolute path** (starts with `/`), not a relative path
+- `private_key_passphrase` is the passphrase you set in Step 2b
+- A template is available at `dbt/profiles.yml.example`
 
-### 9c. Test Connection
+### 10c. Test the Connection
 
 ```bash
 cd dbt
 dbt debug
 ```
 
-**Expected:** `All checks passed!`
+Expected output (last lines):
+
+```
+  Connection test: [OK connection ok]
+
+All checks passed!
+```
+
+If you see errors, double-check:
+- Is the Snowflake user correct? (`TF_USER`)
+- Is the private key path an absolute path?
+- Is the passphrase correct?
+- Was the public key registered in Snowflake? (Step 3c)
 
 ---
 
-## Step 10: Run dbt
+## Step 11: Run dbt Models and Tests
+
+### 11a. Install dbt Packages
 
 ```bash
 cd dbt
-
-# Install packages
 dbt deps
+```
 
-# Run models
+This installs `dbt_utils` and `dbt_expectations` packages defined in `packages.yml`.
+
+### 11b. Run the Models
+
+```bash
 dbt run
-
-# Run tests
-dbt test
 ```
 
-**Expected output:**
+Expected output:
+
 ```
-1 of 2 START sql view model RAW_staging.stg_bookings ................ [SUCCESS]
-2 of 2 START table model RAW_analytics.dim_bookings ................. [SUCCESS]
+1 of 2 START sql view model RAW_STAGING.stg_bookings ............. [SUCCESS]
+2 of 2 START sql table model RAW_ANALYTICS.dim_bookings .......... [SUCCESS]
 
 Completed successfully
 Done. PASS=2 WARN=0 ERROR=0 SKIP=0 TOTAL=2
 ```
 
----
+This creates two objects in Snowflake:
 
-## Step 11: Verify the Full Pipeline
+| Object | Schema | Type | What It Does |
+|--------|--------|------|--------------|
+| `stg_bookings` | `RAW_STAGING` | View | Cleans raw VARCHAR data: trims whitespace, casts dates and numbers, flags invalid records |
+| `dim_bookings` | `RAW_ANALYTICS` | Table | Enriched analytics table: calculates price per night, revenue, stay categories, lead time, time dimensions |
 
-Run in **Snowflake**:
+### 11c. Run the Tests
+
+```bash
+dbt test
+```
+
+Expected output:
+
+```
+Completed successfully
+Done. PASS=19 WARN=0 ERROR=0 SKIP=0 TOTAL=19
+```
+
+The 19 tests check things like:
+- `booking_id` and `booking_key` are unique and not null
+- `booking_status` only contains valid values (confirmed, pending, cancelled, completed)
+- `nights_booked` is non-negative
+- `check_out_date` is after `check_in_date`
+- `stay_category` only contains valid labels
+
+### 11d. Verify in Snowflake
 
 ```sql
--- Raw data (loaded by Snowpipe)
-SELECT COUNT(*) FROM AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW;
-
--- Staging view (cleaned by dbt)
+-- Staging: cleaned data (view)
 SELECT * FROM AIRBNB_PROJECT_DEV.RAW_STAGING.STG_BOOKINGS LIMIT 5;
 
--- Analytics table (enriched by dbt)
+-- Marts: enriched analytics data (table)
 SELECT * FROM AIRBNB_PROJECT_DEV.RAW_ANALYTICS.DIM_BOOKINGS LIMIT 5;
 
 -- Sample analytics query
 SELECT
     booking_status_display,
     stay_category,
-    COUNT(*) as total_bookings,
-    SUM(realized_revenue) as total_revenue,
-    AVG(price_per_night) as avg_price_per_night
+    COUNT(*) AS total_bookings,
+    SUM(realized_revenue) AS total_revenue,
+    ROUND(AVG(price_per_night), 2) AS avg_price_per_night
 FROM AIRBNB_PROJECT_DEV.RAW_ANALYTICS.DIM_BOOKINGS
 GROUP BY 1, 2
 ORDER BY total_bookings DESC;
@@ -418,105 +753,222 @@ ORDER BY total_bookings DESC;
 
 ---
 
-## Step 12: Set Up Bitbucket CI/CD
+# Phase 6: CI/CD with GitHub Actions
 
-### 12a. Push Code to Bitbucket
+## Step 12: Push the Project to GitHub
+
+### 12a. Create a GitHub Repository
+
+1. Go to [github.com/new](https://github.com/new)
+2. Repository name: e.g., `Snowflake-Devops`
+3. Visibility: Private (recommended, since it connects to your cloud accounts)
+4. Do **not** initialize with a README (you already have files)
+5. Click **Create repository**
+
+### 12b. Initialize Git and Push
+
+From the project root (`Snow_project_v1/`):
 
 ```bash
 git init
 git add .
 git commit -m "Initial commit: Snowflake data pipeline"
-
-# Set remote (use your repo URL)
-git remote add origin git@bitbucket.org:YOUR_WORKSPACE/YOUR_REPO.git
-
-# Push (use 'develop' if 'main' is protected)
-git push -u origin develop
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main
 ```
 
-### 12b. Encode Your Private Key
+**Verify**: The `.gitignore` ensures that secrets (`rsa_key.p8`, `terraform.tfvars`, `terraform.tfstate`) are **not** pushed.
 
-Run locally:
+### 12c. Create a GitHub Personal Access Token (PAT)
 
-```bash
-base64 -i snowflake_key/rsa_key.p8 | tr -d '\n' | pbcopy
-```
+1. Go to **GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Name: `snowflake-devops`
+4. Select these scopes:
+   - `repo` (full control of private repositories)
+   - `workflow` (required to push workflow files)
+5. Click **Generate token**
+6. Copy the token immediately (you won't see it again)
 
-This copies the base64-encoded key to your clipboard.
-
-### 12c. Add Repository Variables
-
-Go to **Bitbucket > Your Repo > Settings > Pipelines > Repository Variables**
-
-| Variable | Value | Secured |
-|----------|-------|---------|
-| `SNOWFLAKE_ACCOUNT` | Your Snowflake account ID | No |
-| `SNOWFLAKE_USER` | `TERRAFORMUSER` | No |
-| `SNOWFLAKE_PRIVATE_KEY` | *(paste from clipboard -- Step 12b)* | **Yes** |
-| `SNOWFLAKE_KEY_PASSPHRASE` | Your private key passphrase | **Yes** |
-| `SNOWFLAKE_ROLE` | `ACCOUNTADMIN` | No |
-| `SNOWFLAKE_WAREHOUSE` | `COMPUTE_WH` | No |
-| `AWS_ROLE_ARN` | Your IAM Role ARN | No |
-
-### 12d. Enable Pipelines
-
-Go to **Bitbucket > Your Repo > Settings > Pipelines > Settings > Enable Pipelines**
-
-### 12e. How the Pipeline Works
-
-The pipeline decodes your base64 private key at runtime, writes it to a temp file, and uses it for both Terraform and dbt. No credentials are stored permanently.
-
-| Push to | What happens | Approval |
-|---------|-------------|----------|
-| Feature branch | Validate only | Automatic |
-| `develop` | Deploy to DEV + run dbt | Automatic |
-| `main` | Deploy to PROD + run dbt | **Manual** |
-| Pull request | Validate only | Automatic |
-
-### 12f. Test the Pipeline
-
-```bash
-git commit --allow-empty -m "test pipeline"
-git push origin develop
-```
-
-Go to **Bitbucket > Pipelines** to watch it run.
+If you already have a PAT but get errors pushing `.github/workflows/` files, make sure the `workflow` scope is enabled.
 
 ---
 
-## Quick Reference
+## Step 13: Configure GitHub Actions
 
-### Terraform
+### 13a. Add GitHub Secrets
 
-| Task | Command |
-|------|---------|
-| Initialize | `terraform init` |
-| Preview | `terraform plan` |
-| Deploy | `terraform apply` |
-| Destroy | `terraform destroy` |
-| Show outputs | `terraform output` |
+Go to **GitHub > Your Repository > Settings > Secrets and variables > Actions > Secrets > New repository secret**
 
-### dbt
+Add these secrets one by one:
 
-| Task | Command |
-|------|---------|
-| Install packages | `dbt deps` |
-| Test connection | `dbt debug` |
-| Run all models | `dbt run` |
-| Run one model | `dbt run --select dim_bookings` |
-| Full refresh | `dbt run --full-refresh` |
-| Run tests | `dbt test` |
-| Source freshness | `dbt source freshness` |
-| Generate docs | `dbt docs generate` |
-| View docs | `dbt docs serve` |
+| Secret Name | Value | How to Get It |
+|-------------|-------|---------------|
+| `SNOWFLAKE_ORG_NAME` | Your Snowflake org name | e.g., `HHMNKHZ` (from Step 6b) |
+| `SNOWFLAKE_ACCOUNT_NAME` | Your Snowflake account name | e.g., `QIC56996` (from Step 6b) |
+| `SNOWFLAKE_USER` | `TF_USER` | The user from Step 3a |
+| `SNOWFLAKE_PRIVATE_KEY` | Contents of `rsa_key.p8` | Run `cat snowflake_key/rsa_key.p8` and copy the entire output including the BEGIN/END lines |
+| `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` | Your key passphrase | From Step 2b |
+| `AWS_ROLE_ARN` | Your IAM role ARN | From Step 5c |
 
-### Snowflake Monitoring
+### 13b. Add GitHub Variables
+
+Go to **GitHub > Your Repository > Settings > Secrets and variables > Actions > Variables > New repository variable**
+
+Add these variables:
+
+| Variable Name | Value |
+|---------------|-------|
+| `ENVIRONMENT` | `dev` |
+| `ENVIRONMENT_UPPER` | `DEV` |
+| `PROJECT_NAME` | `airbnb` |
+| `DATABASE_NAME` | `AIRBNB_PROJECT` |
+| `S3_BUCKET_NAME` | Your S3 bucket name |
+| `S3_BUCKET_PATH` | `Booking/` |
+| `S3_BUCKET_URL` | `s3://YOUR_BUCKET_NAME/Booking/` |
+
+### 13c. Create a GitHub Environment
+
+This adds an approval gate before dbt models are deployed to Snowflake.
+
+1. Go to **GitHub > Your Repository > Settings > Environments**
+2. Click **New environment**
+3. Name: `production`
+4. Click **Configure environment**
+5. (Optional) Under **Required reviewers**, add yourself so you must approve each deploy
+
+### 13d. How the CI/CD Pipelines Work
+
+There are two workflow files in `.github/workflows/`:
+
+**Terraform Pipeline** (`terraform.yml`) -- triggered by changes to `terraform/` files:
+
+| Step | What It Does |
+|------|--------------|
+| `terraform init` | Downloads provider plugins |
+| `terraform fmt -check` | Checks code formatting |
+| `terraform validate` | Validates configuration syntax |
+
+> Note: Terraform `apply` is not run in CI because the state file is stored locally. Run `terraform apply` from your local machine.
+
+**dbt Pipeline** (`dbt.yml`) -- triggered by changes to `dbt/models/`, `dbt_project.yml`, or `packages.yml`:
+
+| Job | Steps | When |
+|-----|-------|------|
+| **dbt Check** | `dbt compile` | Every push and PR |
+| **dbt Deploy** | `dbt run` then `dbt test` | Push to `main` only (requires environment approval) |
+
+The dbt pipeline can also be triggered manually via **Actions > dbt CI/CD > Run workflow**.
+
+### 13e. Verify the Pipelines
+
+Push a small change to trigger the workflows:
+
+```bash
+# Make a trivial change (e.g., add a comment to a model file)
+git add .
+git commit -m "test: verify CI/CD pipeline"
+git push
+```
+
+Then go to **GitHub > Your Repository > Actions** to watch the workflows run.
+
+---
+
+# Phase 7: Validation
+
+## Step 14: End-to-End Pipeline Verification
+
+Run through this checklist to confirm everything works:
+
+### 14a. Infrastructure Check
+
+```bash
+cd terraform
+terraform output
+```
+
+All 7 resources should be listed.
+
+### 14b. Data Ingestion Check
+
+Upload a new CSV file to S3 and wait 1--2 minutes:
+
+```bash
+aws s3 cp test_data/test_booking_1.csv s3://YOUR_BUCKET_NAME/Booking/test_new.csv
+```
+
+Then verify in Snowflake:
+
+```sql
+SELECT COUNT(*) FROM AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW;
+```
+
+### 14c. dbt Models Check
+
+```bash
+cd dbt
+dbt run && dbt test
+```
+
+All models should succeed. All 19 tests should pass.
+
+### 14d. CI/CD Check
+
+Go to **GitHub > Actions** and confirm both workflows show green checkmarks.
+
+### 14e. Full Data Flow Check
+
+Run in **Snowflake** to see data at every layer:
+
+```sql
+-- Layer 1: Raw (loaded by Snowpipe)
+SELECT 'RAW' AS layer, COUNT(*) AS rows FROM AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW
+UNION ALL
+-- Layer 2: Staging (cleaned by dbt)
+SELECT 'STAGING', COUNT(*) FROM AIRBNB_PROJECT_DEV.RAW_STAGING.STG_BOOKINGS
+UNION ALL
+-- Layer 3: Analytics (enriched by dbt)
+SELECT 'ANALYTICS', COUNT(*) FROM AIRBNB_PROJECT_DEV.RAW_ANALYTICS.DIM_BOOKINGS;
+```
+
+---
+
+# Quick Reference
+
+## Terraform Commands
+
+| Task | Command | Run From |
+|------|---------|----------|
+| Initialize | `terraform init` | `terraform/` |
+| Preview changes | `terraform plan` | `terraform/` |
+| Deploy | `terraform apply` | `terraform/` |
+| Show outputs | `terraform output` | `terraform/` |
+| Destroy everything | `terraform destroy` | `terraform/` |
+| Format files | `terraform fmt` | `terraform/` |
+
+## dbt Commands
+
+| Task | Command | Run From |
+|------|---------|----------|
+| Test connection | `dbt debug` | `dbt/` |
+| Install packages | `dbt deps` | `dbt/` |
+| Run all models | `dbt run` | `dbt/` |
+| Run one model | `dbt run --select dim_bookings` | `dbt/` |
+| Full refresh | `dbt run --full-refresh` | `dbt/` |
+| Run tests | `dbt test` | `dbt/` |
+| Compile SQL | `dbt compile` | `dbt/` |
+| Generate docs | `dbt docs generate` | `dbt/` |
+| View docs | `dbt docs serve` | `dbt/` |
+
+## Snowflake Monitoring Queries
 
 ```sql
 -- Pipe status
 SELECT SYSTEM$PIPE_STATUS('AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV');
 
--- Recent loads
+-- Recent file loads (last 24 hours)
 SELECT *
 FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
     TABLE_NAME => 'AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW',
@@ -524,110 +976,108 @@ FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(
 ))
 ORDER BY LAST_LOAD_TIME DESC;
 
--- Force reload
+-- Force Snowpipe to re-scan
 ALTER PIPE AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV REFRESH;
 ```
 
 ---
 
-## Troubleshooting
+# Troubleshooting
 
-### Terraform: "private key requires a passphrase"
+## Terraform Issues
 
-Your key is encrypted. Make sure `snowflake_private_key_passphrase` is set in `terraform.tfvars`.
+### "JWT token is invalid" or "private key requires a passphrase"
 
-### Terraform: "Cannot specify column collation"
+- Make sure `snowflake_private_key_passphrase` is set in `terraform.tfvars`
+- Verify your private key: `openssl rsa -in snowflake_key/rsa_key.p8 -check` (enter passphrase)
+- Make sure the public key is registered with the Snowflake user (Step 3c)
 
-Known bug in Snowflake provider v0.87.x. The raw table uses all-VARCHAR columns to avoid this. Type casting happens in dbt.
+### "Object already exists" during terraform apply
 
-### Snowpipe: Data not loading
-
-1. Check pipe status: `SELECT SYSTEM$PIPE_STATUS(...)`
-2. Check copy history for errors
-3. Verify S3 event notification is configured (Step 7d)
-4. Verify IAM trust policy has correct values (Step 7b)
-5. Try manual refresh: `ALTER PIPE ... REFRESH`
-
-### Snowpipe: File parsed but 0 rows loaded
-
-The file was already processed or contained duplicate data. Upload a new file with a **different filename** and **different data**.
-
-### dbt: "Env var required but not provided"
-
-dbt is reading a wrong `profiles.yml`. Delete any `profiles.yml` in the `dbt/` project folder. dbt should only read from `~/.dbt/profiles.yml`.
-
-### dbt: dim_bookings is empty
-
-The staging model filters invalid records. Check if your date format matches. The staging model expects dates in `DD/MM/YY` format. If your CSV uses a different format, update the `try_to_date()` calls in `stg_bookings.sql`.
-
-### Bitbucket: "Permission denied to create branch main"
-
-Your repo has branch protection. Push to `develop` instead:
+The resource already exists in Snowflake but is not in Terraform's state. Import it:
 
 ```bash
-git checkout -b develop
-git push origin develop
+terraform import snowflake_storage_integration.s3 AIRBNB_S3_INT_DEV
 ```
 
-### Bitbucket: Authentication failed
+### "Cannot specify column collation"
 
-Use SSH instead of HTTPS:
+Known bug in Snowflake provider v0.87.x. All raw table columns use VARCHAR type to avoid this. Type casting is done in dbt.
+
+### "Error assuming AWS_ROLE"
+
+The AWS IAM trust policy does not match the Snowflake integration. Re-do Step 8a and 8b.
+
+## Snowpipe Issues
+
+### Data not loading after S3 upload
+
+1. Check pipe status: `SELECT SYSTEM$PIPE_STATUS(...)` -- should show `RUNNING`
+2. Check S3 event notification is configured (Step 8d)
+3. Check IAM trust policy (Step 8b)
+4. Try manual refresh: `ALTER PIPE ... REFRESH`
+5. Check for errors: query `INFORMATION_SCHEMA.COPY_HISTORY`
+
+### File parsed but 0 rows loaded
+
+Snowpipe skips files it has already processed. Upload a file with a **different filename**.
+
+### Columns and data don't match
+
+The CSV column order must exactly match the table column order. If you change the table schema, you must drop and recreate the table and pipe:
+
+```sql
+DROP PIPE AIRBNB_PROJECT_DEV.RAW.AIRBNB_BOOKING_PIPE_DEV;
+DROP TABLE AIRBNB_PROJECT_DEV.RAW.BOOKING_RAW;
+```
+
+Then remove from Terraform state and re-apply:
 
 ```bash
-git remote set-url origin git@bitbucket.org:WORKSPACE/REPO.git
+terraform state rm snowflake_pipe.booking
+terraform state rm snowflake_table.booking_raw
+terraform apply
 ```
 
----
+## dbt Issues
 
-## Project Structure
+### "All checks passed!" fails in dbt debug
 
-```
-├── terraform/
-│   ├── main.tf                  # All Snowflake resources
-│   ├── variables.tf             # Variable definitions
-│   ├── outputs.tf               # Post-deploy instructions
-│   └── terraform.tfvars.example # Config template
-├── dbt/
-│   ├── dbt_project.yml          # Project config
-│   ├── packages.yml             # dbt_utils, dbt_expectations
-│   ├── profiles.yml.example     # Connection template
-│   └── models/
-│       ├── staging/
-│       │   ├── sources.yml      # Source definitions
-│       │   └── stg_bookings.sql # Clean + cast types
-│       └── marts/
-│           ├── dim_bookings.sql # Business logic
-│           └── schema.yml       # Tests + docs
-├── snowflake_key/
-│   ├── rsa_key.p8               # Private key (DO NOT COMMIT)
-│   └── rsa_key.pub              # Public key
-├── bitbucket-pipelines.yml      # CI/CD pipeline
-├── .gitignore                   # Prevents credential commits
-└── README.md
+- Verify `~/.dbt/profiles.yml` exists and has the correct values
+- The `private_key_path` must be an **absolute path** (e.g., `/Users/you/Snow_project_v1/snowflake_key/rsa_key.p8`)
+- Delete any `profiles.yml` inside the `dbt/` project folder (dbt should only use `~/.dbt/profiles.yml`)
+
+### dim_bookings table is empty
+
+The staging model filters out invalid records. Check:
+- Are dates in `DD/MM/YY` format in your CSV?
+- Run `SELECT * FROM RAW_STAGING.STG_BOOKINGS WHERE _is_invalid_record = true` to see filtered rows
+
+### dbt test failures
+
+- Source tests (on `BOOKING_RAW`) use `severity: warn` so they won't block CI
+- Mart tests (on `dim_bookings`) use `severity: error` by default
+- If you have null `BOOKING_ID` rows, clean them: `DELETE FROM BOOKING_RAW WHERE BOOKING_ID IS NULL`
+
+## GitHub Actions Issues
+
+### Push rejected: "refusing to allow... workflow scope"
+
+Your GitHub Personal Access Token needs the `workflow` scope. Update it at:
+**GitHub > Settings > Developer settings > Personal access tokens**
+
+### Terraform workflow fails with "fmt check"
+
+Run `terraform fmt` locally and push the formatted files:
+
+```bash
+cd terraform
+terraform fmt
+git add . && git commit -m "fix: format terraform files" && git push
 ```
 
-## Data Flow
+### dbt workflow fails in CI but works locally
 
-```
-CSV uploaded to S3
-        │
-        ▼
-S3 Event Notification ──▶ SQS Queue
-                                │
-                                ▼
-                          Snowpipe (auto-ingest)
-                                │
-                                ▼
-                    BOOKING_RAW (all VARCHAR)
-                                │
-                           dbt run
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-            stg_bookings              dim_bookings
-            (view: clean +            (table: business
-             cast types)               logic + metrics)
-                                            │
-                                            ▼
-                                    BI Tools / Reports
-```
+- Verify all GitHub Secrets and Variables are set correctly (Step 13a, 13b)
+- Check that the `production` environment exists (Step 13c)
+- Check the workflow logs: **GitHub > Actions > click the failed run > click the failed job**
