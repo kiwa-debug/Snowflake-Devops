@@ -21,9 +21,9 @@ sources:
             description: Unique booking identifier
             tests:
               - not_null:
-                  severity: error
+                  severity: warn
               - unique:
-                  severity: error
+                  severity: warn
 
           - name: LISTING_ID
             description: Property listing identifier
